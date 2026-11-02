@@ -8,6 +8,7 @@
 #define SM_PRINTER_ENDLINE 0x0A
 //#define PAUSE_AFTER_Z
 #define SI_MAX_GCODE_LINE_LEN 128
+#define SI_GCODE_MAX_CMD_LEN 95    // longest command /gcode accepts (MK4duo MAX_CMD_SIZE 96 incl. terminator)
 #define SI_SAMD_LOG_N 20   // ring buffer of recent interesting SAMD replies (for /samd debug)
 
 enum SIMKOperation
@@ -89,13 +90,13 @@ private:
         }
         else
         {
-            sprintf(l_actualSentLine, "%s", line);
+            snprintf(l_actualSentLine, sizeof(l_actualSentLine), "%s", line);   //Bounded copy
         }
 
         char buffer[SI_MAX_GCODE_LINE_LEN];
 
         //Write in buffer first part
-        sprintf(buffer, "N%d %s", m_lineNumber, l_actualSentLine);
+        snprintf(buffer, sizeof(buffer), "N%d %s", m_lineNumber, l_actualSentLine);
 
         //Evaluate checksum
         uint8_t cs = 0;
@@ -106,7 +107,7 @@ private:
         cs &= 0xff;
 
         //Save all in currLine
-        sprintf(currLine, "%s*%d", buffer, cs);
+        snprintf(currLine, sizeof(currLine), "%s*%d", buffer, cs);
         //Increment line number
         m_lineNumber++;
         //Save line

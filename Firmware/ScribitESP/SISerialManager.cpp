@@ -128,7 +128,7 @@ bool SISerialManager::loadNextLine()
         //Load first line to resend
         String oldLine;
         sentLines.peekBack(&oldLine, m_resend - 1);
-        strcpy(currLine, oldLine.c_str());
+        snprintf(currLine, sizeof(currLine), "%s", oldLine.c_str());   //Bounded copy (never overflow currLine)
         //Decrease line to be resent
         m_resend--;
 
@@ -141,8 +141,10 @@ bool SISerialManager::loadNextLine()
         String extraLine;
         //Get next extra line
         extraLines.remove(&extraLine);
-        //Copy in currLine
-        strcpy(currLine, extraLine.c_str());
+        //Copy in currLine. Bounded: before 1.7.10 this was strcpy, and a long browser line
+        //(the 193-byte "M84 S0 ; ..." header) overran currLine[128] into the extraLines
+        //queue right after it, so the next /gcode request crashed the chip.
+        snprintf(currLine, sizeof(currLine), "%s", extraLine.c_str());
     }
 #ifdef PAUSE_AFTER_Z
     //Check for need of z pause-------------------------------
@@ -197,10 +199,11 @@ bool SISerialManager::loadNextLine()
 #endif
                 return false;
             }
-            uint16_t len = m_inFile.readBytesUntil('\n', buffer, SI_SM_MAX_REPLY_LEN);
+            //Leave room for the terminator (a full 128-byte read used to write buffer[128])
+            uint16_t len = m_inFile.readBytesUntil('\n', buffer, SI_SM_MAX_REPLY_LEN - 1);
 
             //Add string terminator
-            if (buffer[len - 1] == 0x0D) //Remove 0x0D if present
+            if (len > 0 && buffer[len - 1] == 0x0D) //Remove 0x0D if present
             {
                 buffer[len - 1] = 0;
             }

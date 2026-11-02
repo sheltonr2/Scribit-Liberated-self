@@ -271,10 +271,17 @@ document.addEventListener('visibilitychange', function () {
   if (document.visibilityState === 'visible' && streamActive && !_wakeLock) acquireWakeLock();
 });
 
+// Longest command the robot accepts. The motor board (MK4duo) holds 96 bytes
+// per command including the terminator; the ESP's own line buffer is 128.
+var MAX_GCODE_LINE = 95;
+
+// Split g-code into the lines we actually send. Comments (';' to end of line)
+// are stripped here: the robot doesn't need them, and before 1.7.10 a long
+// inline comment overflowed the ESP's 128-byte line buffer and crashed it.
 function gcodeLines(gcode) {
   return gcode.split('\n')
-    .map(function (l) { return l.replace(/\r/g, '').trim(); })
-    .filter(function (l) { return l.length > 0 && l[0] !== ';'; });
+    .map(function (l) { return l.replace(/\r/g, '').replace(/;.*$/, '').trim(); })
+    .filter(function (l) { return l.length > 0; });
 }
 
 // Simulate the XY (string-delta) moves from the current calibrated position and
@@ -338,6 +345,10 @@ async function streamDrawing(gcode, opts) {
   if (streamActive) throw new Error('Already drawing — press Stop first');
   var lines = gcodeLines(gcode);
   if (!lines.length) throw new Error('Nothing to draw');
+  for (var li = 0; li < lines.length; li++) {
+    if (lines[li].length > MAX_GCODE_LINE)
+      throw new Error('Refused — line ' + (li + 1) + ' is ' + lines[li].length + ' characters (max ' + MAX_GCODE_LINE + '): ' + lines[li].slice(0, 40) + '…');
+  }
   if (opts.bounds !== false) {
     var be = gcodeLeavesCanvas(lines);
     if (be) throw new Error('Refused — ' + be + '. Use "Fit to wall" or recenter the robot.');
@@ -355,12 +366,10 @@ async function streamDrawing(gcode, opts) {
 // executing and "ok T:.." when idle; the poll below just pokes the board so a
 // fresh reply lands and stale 'busy' lines age out of /samd's tail.
 //
-// We poll with M105 (temperature) NOT M114 (position): on some units the ESP
-// firmware crashes/reboots the instant it has to handle M114's long position
-// reply (it's the only draw-time command whose answer isn't a plain "ok", so it
-// hits an untested reply path), which resets the chip at draw start and drops
-// WiFi. M105 returns a clean "ok T:.." that the firmware already handles on every
-// robot, detects busy identically, and avoids that crash entirely.
+// We poll with M105 (temperature). 1.7.9 switched from M114 believing its reply
+// crashed the ESP; 1.7.10 found the real cause (the long "M84 S0 ; ..." line
+// overflowing the ESP's line buffer, so whichever poll came next crashed). M105
+// works fine either way and is kept.
 async function samdTail() {
   var r = await fetch(API_BASE + '/samd', { signal: AbortSignal.timeout(5000) });
   return (await r.text()).trim().split('\n');
@@ -433,6 +442,7 @@ async function _runStream(lines) {
         }
         var st = '';
         try { st = JSON.parse(resp).status; } catch (e) {}
+        if (st === 'toolong') throw new Error('robot rejected line ' + (i + 1) + ' as too long: ' + lines[i]);
         if (st !== 'full') break;         // 'queued' (incl. dedup) → accepted
         if (logEntry) logEntry.bufferWaits++;
         await sleep(50);                  // buffer full → back off and retry
@@ -971,7 +981,9 @@ function svgToGcode(svgText, anchorDist, leftLen, rightLen, opts) {
     '; Scribit Liberated — self-contained: home pen 1, then draw',
     '; Anchor: ' + anchorDist + 'mm, Left: ' + leftLen + 'mm, Right: ' + rightLen + 'mm',
     'M17 ; enable steppers',
-    'M84 S0 ; disable stepper inactivity timeout — keeps the pen-cam (Z) energized so it stays seated through stream pauses (otherwise the carousel un-seats after 120s idle and pens stop pressing)',
+    // M84 S0 disables the stepper inactivity timeout so the pen-cam (Z) stays energized and
+    // seated through stream pauses (otherwise the carousel un-seats after 120s idle).
+    'M84 S0 ; keep pen-cam energized',
     'G77 ; home pen carousel',
     'G90 ; absolute',
     'G1 Z160 ; overshoot to seat pen 1',

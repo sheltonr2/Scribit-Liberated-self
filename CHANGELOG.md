@@ -4,7 +4,35 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [1.7.10] - 2026-11-02
+
 ### Fixed
+- **The draw-start crash is fixed (the real cause this time).** Every drawing failed with
+  "robot stalled at line 2: M84 S0 …" at 0%, and the diagnostic report showed
+  `reset reason: crash` with `Last crash caught WHILE: gcode -> M105` (`-> M114` before 1.7.9).
+  The cause was a **buffer overflow on the ESP**, not the poll command:
+  - The drawing header's line 2 was `M84 S0 ; disable stepper inactivity timeout — keeps the
+    pen-cam …`, **193 bytes** with its comment, and the browser sent comments along.
+  - The ESP copied each queued line into `currLine[128]` with `strcpy`, so this one ran
+    66 bytes past the end and overwrote the `extraLines` command queue stored right after it
+    (its data pointer became the text `"the "`).
+  - The **next** `/gcode` request (the pacing poll) wrote through that bad pointer and the
+    chip panicked. That's why switching the poll from `M114` to `M105` in 1.7.9 changed the
+    crash note but not the crash. The browser sees the dead ESP as a "stall".
+  
+  Fixes, in both the web UI and the firmware so either one alone prevents it:
+  - **Web UI (`app.js`):** g-code comments are stripped before sending; the `M84 S0` comment is
+    shortened; a drawing with any line over 95 characters is refused up front; a `toolong`
+    reply from the robot stops the draw with a clear error instead of retrying.
+  - **Firmware (`ScribIt_wifi.cpp`):** `/gcode` strips `;` comments and whitespace, acks
+    comment-only lines without queueing them, and answers `{"status":"toolong"}` for any
+    command over 95 characters (MK4duo's `MAX_CMD_SIZE` is 96).
+  - **Firmware (`SISerialManager.cpp/.hpp`):** every copy into `currLine` and the encapsulate
+    buffers is now bounded (`snprintf` instead of `strcpy`/`sprintf`), and the SPIFFS file
+    reader no longer writes one byte past its 128-byte buffer on a full-length line (or reads
+    `buffer[-1]` on an empty one).
+- **Corrected 1.7.9's root-cause note.** The `M114` reply was never the problem; the `M105`
+  poll is kept because it works either way.
 - **`espota.py` no longer crashes with `NameError: name 'e' is not defined`** when a flash
   doesn't complete. The failure handler used the Python 2 `except e:` form; it now catches
   cleanly and prints "No Result!" as intended. (Cosmetic — it only fired on the failure path —

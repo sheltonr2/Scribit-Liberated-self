@@ -514,11 +514,31 @@ void ScribIt::handleHTTPRequests()
             if (query.startsWith("n="))
                 seq = query.substring(2).toInt();
 
+            // Drop any ';' comment and surrounding whitespace: the motor board ignores
+            // comments anyway, and they only make the line longer.
+            int semi = gcodeCmd.indexOf(';');
+            if (semi >= 0)
+                gcodeCmd.remove(semi);
+            gcodeCmd.trim();
+
             const char *status;
             if (seq >= 0 && seq <= sm.lastStreamSeq())
             {
                 // Duplicate (already accepted) — ack as queued, do not re-add.
                 status = "queued";
+            }
+            else if (gcodeCmd.length() == 0)
+            {
+                // Comment-only/blank line: nothing to send. Ack it so the stream moves on.
+                if (seq >= 0)
+                    sm.setLastStreamSeq(seq);
+                status = "queued";
+            }
+            else if (gcodeCmd.length() > SI_GCODE_MAX_CMD_LEN)
+            {
+                // Too long for the motor board's 96-byte command buffer. Reject it
+                // instead of queueing (the browser stops the draw with an error).
+                status = "toolong";
             }
             else
             {
